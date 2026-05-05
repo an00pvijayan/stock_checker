@@ -1,0 +1,18 @@
+{
+  "check_window": "09:00",
+  "symbols": [
+    {
+      "ticker": "AAPL",
+      "above": 220,
+      "below": 190
+    },
+    {
+      "ticker": "MSFT",
+      "above": 470
+    },
+    {
+      "ticker": "RELIANCE.NS",
+      "below": 2800
+    }
+  ]
+}
