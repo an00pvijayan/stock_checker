@@ -16,3 +16,20 @@ class WatchItem(BaseModel):
     baseline_price: float | None = None
     last_price: float | None = None
     last_alert_price: float | None = None
+
+
+class WatchlistAnalysisItem(BaseModel):
+    symbol: str
+    variance: float
+    baseline_price: float | None = None
+    last_price: float | None = None
+    recommendation: str
+    confidence: float
+    reason: str
+
+
+class WatchlistStatusResponse(BaseModel):
+    count: int
+    llm_provider: str
+    llm_enabled: bool
+    items: list[WatchlistAnalysisItem]

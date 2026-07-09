@@ -1,6 +1,8 @@
 import asyncio
+import time
 from dataclasses import asdict
 
+from app.llm_advisor import StockAdvisor, StockRecommendation
 from app.price_provider import YahooFinancePriceProvider
 from app.store import InMemoryWatchStore, WatchRecord
 from app.telegram import TelegramNotifier
@@ -29,11 +31,16 @@ class StockMonitor:
         price_provider: YahooFinancePriceProvider,
         notifier: TelegramNotifier,
         poll_interval_seconds: int,
+        advisor: StockAdvisor | None = None,
+        llm_analysis_interval_seconds: int = 3600,
     ) -> None:
         self.store = store
         self.price_provider = price_provider
         self.notifier = notifier
         self.poll_interval_seconds = poll_interval_seconds
+        self.advisor = advisor
+        self.llm_analysis_interval_seconds = llm_analysis_interval_seconds
+        self._last_analysis_at = 0.0
         self._task: asyncio.Task | None = None
         self._stopped = asyncio.Event()
 
@@ -50,6 +57,7 @@ class StockMonitor:
     async def _run(self) -> None:
         while not self._stopped.is_set():
             await self.check_once()
+            await self.analyze_if_due()
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=self.poll_interval_seconds)
             except asyncio.TimeoutError:
@@ -72,3 +80,39 @@ class StockMonitor:
             except Exception as exc:
                 print(f"[monitor] {record.symbol}: {exc}")
         return alerts
+
+    async def analyze_if_due(self) -> list[StockRecommendation]:
+        if not self.advisor:
+            return []
+        now = time.monotonic()
+        if now - self._last_analysis_at < self.llm_analysis_interval_seconds:
+            return []
+        self._last_analysis_at = now
+        return await self.run_llm_analysis()
+
+    async def run_llm_analysis(self) -> list[StockRecommendation]:
+        if not self.advisor:
+            return []
+        try:
+            recommendations = await asyncio.to_thread(self.advisor.analyze_market)
+            actionable = [
+                item
+                for item in recommendations
+                if item.recommendation in {"BUY", "SELL"} and item.confidence >= 0.55
+            ]
+            if actionable:
+                await asyncio.to_thread(self.notifier.send, build_llm_alert(actionable))
+            return recommendations
+        except Exception as exc:
+            print(f"[llm-analysis] {exc}")
+            return []
+
+
+def build_llm_alert(recommendations: list[StockRecommendation]) -> str:
+    lines = ["<b>LLM stock recommendations</b>", "Not financial advice."]
+    for item in recommendations[:10]:
+        lines.append(
+            f"{item.symbol}: {item.recommendation} "
+            f"({item.confidence:.0%}) - {item.reason}"
+        )
+    return "\n".join(lines)

@@ -1,30 +1,23 @@
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
 
-from app.agent import build_agent
 from app.config import load_settings
-from app.models import PromptRequest, WatchItem, WatchRequest
-from app.monitor import StockMonitor
-from app.price_provider import PriceProviderError, YahooFinancePriceProvider
-from app.store import InMemoryWatchStore
-from app.telegram import TelegramNotifier
+from app.container import ApplicationContainer
+from app.models import PromptRequest, WatchItem, WatchRequest, WatchlistStatusResponse
+from app.price_provider import PriceProviderError
 
 
 settings = load_settings()
-store = InMemoryWatchStore()
-price_provider = YahooFinancePriceProvider()
-notifier = TelegramNotifier(settings.telegram_bot_token, settings.telegram_chat_id)
-monitor = StockMonitor(store, price_provider, notifier, settings.poll_interval_seconds)
-agent = build_agent(store, price_provider, settings.default_variance_percent)
+container = ApplicationContainer(settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    monitor.start()
+    container.send_startup_health_report()
+    container.monitor.start()
     yield
-    await monitor.stop()
+    await container.monitor.stop()
 
 
 app = FastAPI(
@@ -35,46 +28,43 @@ app = FastAPI(
 )
 
 
-def to_watch_item(record) -> WatchItem:
-    return WatchItem(**asdict(record))
-
-
 @app.get("/health")
 def health() -> dict:
-    return {
-        "status": "ok",
-        "telegram_enabled": notifier.enabled,
-        "poll_interval_seconds": settings.poll_interval_seconds,
-    }
+    return container.health_payload()
 
 
 @app.post("/watch", response_model=WatchItem)
 def add_watch(request: WatchRequest) -> WatchItem:
     symbol = request.symbol.upper().strip()
     try:
-        price = price_provider.get_price(symbol)
+        price = container.price_provider.get_price(symbol)
     except PriceProviderError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    record = store.add(symbol, request.variance, baseline_price=price)
-    return to_watch_item(record)
+    record = container.store.add(symbol, request.variance, baseline_price=price)
+    return container.to_watch_item(record)
 
 
 @app.get("/watch", response_model=list[WatchItem])
 def list_watch() -> list[WatchItem]:
-    return [to_watch_item(record) for record in store.list()]
+    return [container.to_watch_item(record) for record in container.store.list()]
 
 
 @app.delete("/watch/{symbol}")
 def delete_watch(symbol: str) -> dict:
-    deleted = store.delete(symbol)
+    deleted = container.store.delete(symbol)
     return {"symbol": symbol.upper(), "deleted": deleted}
+
+
+@app.get("/status", response_model=WatchlistStatusResponse)
+def watchlist_status() -> WatchlistStatusResponse:
+    return container.watchlist_status()
 
 
 @app.post("/prompt")
 def route_prompt(request: PromptRequest) -> dict:
     try:
-        result = agent.invoke({"prompt": request.prompt})
+        result = container.agent.invoke({"prompt": request.prompt})
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -86,5 +76,11 @@ def route_prompt(request: PromptRequest) -> dict:
 
 @app.post("/monitor/check")
 async def check_now() -> dict:
-    alerts = await monitor.check_once()
+    alerts = await container.monitor.check_once()
     return {"alerts": alerts}
+
+
+@app.post("/analysis/run")
+async def run_analysis_now() -> dict:
+    recommendations = await container.monitor.run_llm_analysis()
+    return {"recommendations": [item.__dict__ for item in recommendations]}

@@ -3,6 +3,7 @@ from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from app.llm_advisor import StockAdvisor
 from app.price_provider import YahooFinancePriceProvider
 from app.store import InMemoryWatchStore
 
@@ -42,6 +43,7 @@ def build_agent(
     store: InMemoryWatchStore,
     price_provider: YahooFinancePriceProvider,
     default_variance: float,
+    advisor: StockAdvisor | None = None,
 ):
     def router_node(state: AgentState) -> AgentState:
         prompt = state["prompt"].strip()
@@ -74,6 +76,9 @@ def build_agent(
         return {**state, "response": response}
 
     def chat_node(state: AgentState) -> AgentState:
+        if advisor:
+            return {**state, "response": advisor.answer_chat(state["prompt"])}
+
         records = store.list()
         if not records:
             return {
